@@ -4,6 +4,8 @@
 
 from pyrogram import Client
 from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, LOGIN_SYSTEM, LOG_CHANNEL_ID
+from pathlib import Path
+import hashlib
 
 
 def get_valid_log_channel_id(channel_id):
@@ -16,6 +18,14 @@ def get_valid_log_channel_id(channel_id):
         return int(channel_id)
     except (TypeError, ValueError):
         return None
+
+
+def file_sha1(path):
+    try:
+        content = Path(path).read_bytes()
+        return hashlib.sha1(content).hexdigest()[:10]
+    except Exception:
+        return "unknown"
 
 if STRING_SESSION is not None and LOGIN_SYSTEM == False:
 	TechVJUser = Client("TechVJ", api_id=API_ID, api_hash=API_HASH, session_string=STRING_SESSION)
@@ -41,6 +51,7 @@ class Bot(Client):
             
         await super().start()
         print('Bot Started Powered By @dreamm_ca')
+        print(f"Build Fingerprint: start={file_sha1('TechVJ/start.py')} generate={file_sha1('TechVJ/generate.py')} bot={file_sha1('bot.py')}")
         log_channel_id = get_valid_log_channel_id(LOG_CHANNEL_ID)
         if log_channel_id is None:
             print('Backup Channel: DISABLED (LOG_CHANNEL_ID is missing or invalid)')

@@ -29,6 +29,7 @@ https://t.me/c/xxxx/101-120
 
 **Notes**
 Spaces in the range do not matter.
+Use /generate to auto-generate API ID and API HASH.
 Use /login for restricted content when required.
 Use /cancel to stop an ongoing task."""
        

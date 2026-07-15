@@ -6,6 +6,7 @@ import asyncio
 import random
 import re
 import string
+import time
 
 import requests
 from pyrogram import Client, filters
@@ -109,11 +110,22 @@ class TelegramApiGenerator:
         if len(api) >= 2 and api[0].isdigit() and re.fullmatch(r"[0-9a-fA-F]{32}", api[1]):
             return int(api[0]), api[1]
 
-        # Fallback parser for changed HTML.
-        id_match = re.search(r"App\s*api_id.*?value=\"(\d+)\"", page_text, re.IGNORECASE | re.DOTALL)
-        hash_match = re.search(r"App\s*api_hash.*?value=\"([0-9a-fA-F]{32})\"", page_text, re.IGNORECASE | re.DOTALL)
-        if id_match and hash_match:
-            return int(id_match.group(1)), hash_match.group(1)
+        patterns = [
+            (r'name="api_id"[^>]*value="(\d+)"', r'name="api_hash"[^>]*value="([0-9a-fA-F]{32})"'),
+            (r'id="api_id"[^>]*value="(\d+)"', r'id="api_hash"[^>]*value="([0-9a-fA-F]{32})"'),
+            (r'api_id[^0-9]{0,40}(\d{5,10})', r'api_hash[^0-9a-fA-F]{0,40}([0-9a-fA-F]{32})'),
+        ]
+        for id_pattern, hash_pattern in patterns:
+            id_match = re.search(id_pattern, page_text, re.IGNORECASE | re.DOTALL)
+            hash_match = re.search(hash_pattern, page_text, re.IGNORECASE | re.DOTALL)
+            if id_match and hash_match:
+                return int(id_match.group(1)), hash_match.group(1)
+
+        # Last resort: extract the first plausible API pair from the page body.
+        id_candidates = [int(x) for x in re.findall(r"\b(\d{5,10})\b", page_text)]
+        hash_candidates = re.findall(r"\b([0-9a-fA-F]{32})\b", page_text)
+        if id_candidates and hash_candidates:
+            return id_candidates[0], hash_candidates[0]
 
         return None
 
@@ -150,12 +162,22 @@ class TelegramApiGenerator:
         )
         create_resp.raise_for_status()
 
-        check_page = self.session.get("https://my.telegram.org/apps", timeout=30)
-        check_page.raise_for_status()
-        created = self._extract_api_from_apps_page(check_page.text)
-        if not created:
-            raise ValueError("API ID/HASH not found after app creation")
-        return created
+        if re.search(r"(APP_SHORTNAME_INVALID|APP_TITLE_INVALID|SHORTNAME|invalid|error)", create_resp.text, re.IGNORECASE):
+            raise ValueError("Telegram rejected the app creation request. Try a different app name and shortname.")
+
+        for _ in range(4):
+            check_page = self.session.get("https://my.telegram.org/apps", timeout=30)
+            check_page.raise_for_status()
+            created = self._extract_api_from_apps_page(check_page.text)
+            if created:
+                return created
+            time.sleep(1)
+
+        fallback = self._extract_api_from_apps_page(create_resp.text)
+        if fallback:
+            return fallback
+
+        raise ValueError("API ID/HASH not found after app creation. Telegram may not have created the app yet.")
 
 
 @Client.on_message(filters.private & ~filters.forwarded & filters.command(["logout"]))
@@ -197,8 +219,8 @@ async def generate_api(bot: Client, message: Message):
 
     otp_msg = await bot.ask(
         user_id,
-        "Enter OTP received on Telegram for my.telegram.org login.\n"
-        "Example: if OTP is <code>12345</code>, send <code>1 2 3 4 5</code>.\n\n"
+        "Enter the code received on Telegram for my.telegram.org login.\n"
+        "Send it exactly as received. Spaces are removed automatically.\n\n"
         "Send /cancel to stop.",
         filters=filters.text,
         timeout=600,
@@ -206,7 +228,7 @@ async def generate_api(bot: Client, message: Message):
     if otp_msg.text.strip().lower() == "/cancel":
         return await otp_msg.reply("<b>Process cancelled.</b>")
 
-    otp = otp_msg.text.replace(" ", "")
+    otp = otp_msg.text.strip().replace(" ", "")
     try:
         await asyncio.to_thread(generator.auth_login, phone_number, otp)
     except Exception as e:

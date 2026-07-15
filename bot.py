@@ -3,7 +3,19 @@
 # Ask Doubt on telegram @KingVJ01
 
 from pyrogram import Client
-from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, LOGIN_SYSTEM
+from config import API_ID, API_HASH, BOT_TOKEN, STRING_SESSION, LOGIN_SYSTEM, LOG_CHANNEL_ID
+
+
+def get_valid_log_channel_id(channel_id):
+    try:
+        if channel_id is None:
+            return None
+        channel_id = str(channel_id).strip()
+        if not channel_id:
+            return None
+        return int(channel_id)
+    except (TypeError, ValueError):
+        return None
 
 if STRING_SESSION is not None and LOGIN_SYSTEM == False:
 	TechVJUser = Client("TechVJ", api_id=API_ID, api_hash=API_HASH, session_string=STRING_SESSION)
@@ -29,6 +41,11 @@ class Bot(Client):
             
         await super().start()
         print('Bot Started Powered By @dreamm_ca')
+        log_channel_id = get_valid_log_channel_id(LOG_CHANNEL_ID)
+        if log_channel_id is None:
+            print('Backup Channel: DISABLED (LOG_CHANNEL_ID is missing or invalid)')
+        else:
+            print(f'Backup Channel: ENABLED ({log_channel_id})')
 
     async def stop(self, *args):
 

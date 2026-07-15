@@ -30,6 +30,11 @@ ADMINS = int(os.environ.get("ADMINS", "6073523936"))
 # if you don't want to upload in channel then leave it blank don't fill anything.
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
 
+# Your Log Channel Id In Which Bot Saves Successful Media Backups.
+# And Make Your Bot Admin In this channel with full rights.
+# if you don't want backup then leave it blank don't fill anything.
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "")
+
 # Your Mongodb Database Url
 # Warning - Give Db uri in deploy server environment variable, don't give in repo.
 DB_URI = os.environ.get("DB_URI", "") # Warning - Give Db uri in deploy server environment variable, don't give in repo.

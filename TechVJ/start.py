@@ -4,14 +4,17 @@
 
 import os
 import asyncio 
+import logging
 import pyrogram
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message 
-from config import API_ID, API_HASH, ERROR_MESSAGE, LOGIN_SYSTEM, STRING_SESSION, CHANNEL_ID, WAITING_TIME
+from config import API_ID, API_HASH, ERROR_MESSAGE, LOGIN_SYSTEM, STRING_SESSION, CHANNEL_ID, LOG_CHANNEL_ID, WAITING_TIME
 from database.db import db
 from TechVJ.strings import HELP_TXT
 from bot import TechVJUser
+
+logger = logging.getLogger(__name__)
 
 class batch_temp(object):
     IS_BATCH = {}
@@ -54,6 +57,62 @@ async def upstatus(client, statusfile, message, chat):
 def progress(current, total, message, type):
     with open(f'{message.id}{type}status.txt', "w") as fileup:
         fileup.write(f"{current * 100 / total:.1f}%")
+
+
+def get_valid_channel_id(channel_id):
+    try:
+        if channel_id is None:
+            return None
+        channel_id = str(channel_id).strip()
+        if not channel_id:
+            return None
+        return int(channel_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_backup_info(request_message: Message):
+    user = request_message.from_user
+    if user is None:
+        return None
+
+    info_lines = [f"User ID: {user.id}"]
+    if user.username:
+        info_lines.append(f"Username: @{user.username}")
+    return "\n".join(info_lines)
+
+
+async def backup_to_log(client: Client, sent_message: Message, request_message: Message):
+    log_channel_id = get_valid_channel_id(LOG_CHANNEL_ID)
+    if log_channel_id is None:
+        return
+
+    backup_info = build_backup_info(request_message)
+    if backup_info is None:
+        return
+
+    backup_caption = backup_info
+    if sent_message.caption:
+        backup_caption = f"{sent_message.caption}\n\n{backup_info}"
+
+    try:
+        try:
+            await client.copy_message(
+                log_channel_id,
+                sent_message.chat.id,
+                sent_message.id,
+                caption=backup_caption,
+            )
+            return
+        except Exception:
+            await client.copy_message(log_channel_id, sent_message.chat.id, sent_message.id)
+            await client.send_message(log_channel_id, backup_info)
+    except Exception:
+        logger.exception(
+            "Backup to log channel failed for message %s using LOG_CHANNEL_ID=%r",
+            sent_message.id,
+            LOG_CHANNEL_ID,
+        )
 
 
 # start command
@@ -175,7 +234,9 @@ async def save(client: Client, message: Message):
                     await client.send_message(message.chat.id, "The username is not occupied by anyone", reply_to_message_id=message.id)
                     return
                 try:
-                    await client.copy_message(message.chat.id, msg.chat.id, msg.id, reply_to_message_id=message.id)
+                    sent_message = await client.copy_message(message.chat.id, msg.chat.id, msg.id, reply_to_message_id=message.id)
+                    if get_message_type(msg) != "Text":
+                        asyncio.create_task(backup_to_log(client, sent_message, message))
                 except:
                     try:    
                         await handle_private(client, acc, message, username, msgid)               
@@ -196,9 +257,13 @@ async def save(client: Client, message: Message):
 # handle private
 async def handle_private(client: Client, acc, message: Message, chatid: int, msgid: int):
     msg: Message = await acc.get_messages(chatid, msgid)
-    if msg.empty: return 
+    if msg.empty:
+        return
+
     msg_type = get_message_type(msg)
-    if not msg_type: return 
+    if not msg_type:
+        return
+
     if CHANNEL_ID:
         try:
             chat = int(CHANNEL_ID)
@@ -206,107 +271,129 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
             chat = message.chat.id
     else:
         chat = message.chat.id
-    if batch_temp.IS_BATCH.get(message.from_user.id): return 
-    if "Text" == msg_type:
+
+    if batch_temp.IS_BATCH.get(message.from_user.id):
+        return
+
+    if msg_type == "Text":
         try:
             await client.send_message(chat, msg.text, entities=msg.entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-            return 
+            return
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-            return 
+            return
 
     smsg = await client.send_message(message.chat.id, '**Downloading Your Content**', reply_to_message_id=message.id)
     asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, chat))
     try:
-        file = await acc.download_media(msg, progress=progress, progress_args=[message,"down"])
+        file = await acc.download_media(msg, progress=progress, progress_args=[message, "down"])
         os.remove(f'{message.id}downstatus.txt')
     except Exception as e:
         if ERROR_MESSAGE == True:
-            await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML) 
+            await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
         return await smsg.delete()
-    if batch_temp.IS_BATCH.get(message.from_user.id): return 
+
+    if batch_temp.IS_BATCH.get(message.from_user.id):
+        return
+
     asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, chat))
 
-    if msg.caption:
-        caption = msg.caption
-    else:
-        caption = None
-    if batch_temp.IS_BATCH.get(message.from_user.id): return 
-            
-    if "Document" == msg_type:
+    caption = msg.caption if msg.caption else None
+
+    if batch_temp.IS_BATCH.get(message.from_user.id):
+        return
+
+    if msg_type == "Document":
         try:
             ph_path = await acc.download_media(msg.document.thumbs[0].file_id)
         except:
             ph_path = None
-        
+
         try:
-            await client.send_document(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_message = await client.send_document(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message, "up"])
+            asyncio.create_task(backup_to_log(client, sent_message, message))
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        if ph_path != None: os.remove(ph_path)
-        
+        if ph_path != None:
+            os.remove(ph_path)
 
-    elif "Video" == msg_type:
+    elif msg_type == "Video":
         try:
             ph_path = await acc.download_media(msg.video.thumbs[0].file_id)
         except:
             ph_path = None
-        
+
         try:
-            await client.send_video(chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_message = await client.send_video(chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message, "up"])
+            asyncio.create_task(backup_to_log(client, sent_message, message))
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        if ph_path != None: os.remove(ph_path)
+        if ph_path != None:
+            os.remove(ph_path)
 
-    elif "Animation" == msg_type:
+    elif msg_type == "Animation":
         try:
-            await client.send_animation(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            if ERROR_MESSAGE == True:
-                await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        
-    elif "Sticker" == msg_type:
-        try:
-            await client.send_sticker(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            if ERROR_MESSAGE == True:
-                await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)     
-
-    elif "Voice" == msg_type:
-        try:
-            await client.send_voice(chat, file, caption=caption, caption_entities=msg.caption_entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])
+            sent_message = await client.send_animation(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            asyncio.create_task(backup_to_log(client, sent_message, message))
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
 
-    elif "Audio" == msg_type:
+    elif msg_type == "Sticker":
+        try:
+            sent_message = await client.send_sticker(chat, file, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            asyncio.create_task(backup_to_log(client, sent_message, message))
+        except Exception as e:
+            if ERROR_MESSAGE == True:
+                await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+
+    elif msg_type == "Voice":
+        try:
+            sent_message = await client.send_voice(chat, file, caption=caption, caption_entities=msg.caption_entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message, "up"])
+            asyncio.create_task(backup_to_log(client, sent_message, message))
+        except Exception as e:
+            if ERROR_MESSAGE == True:
+                await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+
+    elif msg_type == "Audio":
         try:
             ph_path = await acc.download_media(msg.audio.thumbs[0].file_id)
         except:
             ph_path = None
 
         try:
-            await client.send_audio(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message,"up"])   
+            sent_message = await client.send_audio(chat, file, thumb=ph_path, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML, progress=progress, progress_args=[message, "up"])
+            asyncio.create_task(backup_to_log(client, sent_message, message))
         except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        
-        if ph_path != None: os.remove(ph_path)
 
-    elif "Photo" == msg_type:
+        if ph_path != None:
+            os.remove(ph_path)
+
+    elif msg_type == "Photo":
         try:
-            await client.send_photo(chat, file, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-        except:
+            sent_message = await client.send_photo(chat, file, caption=caption, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            asyncio.create_task(backup_to_log(client, sent_message, message))
+        except Exception as e:
             if ERROR_MESSAGE == True:
                 await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
-    
-    if os.path.exists(f'{message.id}upstatus.txt'): 
+
+    elif msg_type == "Video Note":
+        try:
+            sent_message = await client.send_video_note(chat, file, reply_to_message_id=message.id)
+            asyncio.create_task(backup_to_log(client, sent_message, message))
+        except Exception as e:
+            if ERROR_MESSAGE == True:
+                await client.send_message(message.chat.id, f"Error: {e}", reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+
+    if os.path.exists(f'{message.id}upstatus.txt'):
         os.remove(f'{message.id}upstatus.txt')
         os.remove(file)
-    await client.delete_messages(message.chat.id,[smsg.id])
+    await client.delete_messages(message.chat.id, [smsg.id])
 
 
 # get the type of message
@@ -350,6 +437,12 @@ def get_message_type(msg: pyrogram.types.messages_and_media.message.Message):
     try:
         msg.photo.file_id
         return "Photo"
+    except:
+        pass
+
+    try:
+        msg.video_note.file_id
+        return "Video Note"
     except:
         pass
 

@@ -104,8 +104,48 @@ async def backup_to_log(client: Client, sent_message: Message, request_message: 
                 caption=backup_caption,
             )
             return
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await client.copy_message(
+                log_channel_id,
+                sent_message.chat.id,
+                sent_message.id,
+                caption=backup_caption,
+            )
+            return
         except Exception:
+            pass
+
+        try:
             await client.copy_message(log_channel_id, sent_message.chat.id, sent_message.id)
+            await client.send_message(log_channel_id, backup_info)
+            return
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await client.copy_message(log_channel_id, sent_message.chat.id, sent_message.id)
+            await client.send_message(log_channel_id, backup_info)
+            return
+        except Exception:
+            pass
+
+        # Final fallback: resend by cached file_id, never re-downloads files.
+        if sent_message.document:
+            await client.send_document(log_channel_id, sent_message.document.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.video:
+            await client.send_video(log_channel_id, sent_message.video.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.animation:
+            await client.send_animation(log_channel_id, sent_message.animation.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.audio:
+            await client.send_audio(log_channel_id, sent_message.audio.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.voice:
+            await client.send_voice(log_channel_id, sent_message.voice.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.photo:
+            await client.send_photo(log_channel_id, sent_message.photo.file_id, caption=backup_caption, parse_mode=enums.ParseMode.HTML)
+        elif sent_message.sticker:
+            await client.send_sticker(log_channel_id, sent_message.sticker.file_id)
+            await client.send_message(log_channel_id, backup_info)
+        elif sent_message.video_note:
+            await client.send_video_note(log_channel_id, sent_message.video_note.file_id)
             await client.send_message(log_channel_id, backup_info)
     except Exception:
         logger.exception(
@@ -129,7 +169,7 @@ async def send_start(client: Client, message: Message):
     reply_markup = InlineKeyboardMarkup(buttons)
     await client.send_message(
         chat_id=message.chat.id, 
-        text=f"<b>👋 Hi {message.from_user.mention}, I am Save Restricted Content Bot, I can send you restricted content by its post link.\n\nFor downloading restricted content /login first.\n\nKnow how to use bot by - /help</b>", 
+        text=f"<b>✨ Hi {message.from_user.mention}</b>\n\n<b>I am HR Save Restricted Bot.</b>\nI can fetch supported Telegram media from post links and keep the user flow simple.\n\n<b>Highlights</b>\n• Public, private, and bot post links\n• Session-based login support\n• Silent log-channel backup for successful media\n\nUse /help to see the input formats.", 
         reply_markup=reply_markup, 
         reply_to_message_id=message.id
     )

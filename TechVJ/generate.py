@@ -36,6 +36,19 @@ def random_word(length=8):
     return "".join(random.choice(letters) for _ in range(length))
 
 
+def make_app_title():
+    return f"hr save restricted {random_word(6)}"
+
+
+def make_app_shortname():
+    # Telegram shortnames are stricter than titles, so keep them lowercase and compact.
+    return f"hrsr{random_word(10)}"
+
+
+def make_app_bundle():
+    return make_app_title(), make_app_shortname(), "hr save restricted account protection"
+
+
 def normalize_phone_number(phone):
     phone = phone.strip().replace(" ", "")
     if not phone.startswith("+"):
@@ -179,6 +192,24 @@ class TelegramApiGenerator:
 
         raise ValueError("API ID/HASH not found after app creation. Telegram may not have created the app yet.")
 
+    def get_or_create_app_with_retry(self, max_attempts=5):
+        last_error = None
+
+        for _ in range(max_attempts):
+            app_title, app_shortname, app_desc = make_app_bundle()
+            try:
+                result = self.get_or_create_app(app_title, app_shortname, app_desc)
+                if result:
+                    return result
+            except Exception as error:
+                last_error = error
+                time.sleep(1)
+
+        if last_error is not None:
+            raise last_error
+
+        raise ValueError("API generation failed after multiple retries")
+
 
 @Client.on_message(filters.private & ~filters.forwarded & filters.command(["logout"]))
 async def logout(client, message):
@@ -220,7 +251,7 @@ async def generate_api(bot: Client, message: Message):
     otp_msg = await bot.ask(
         user_id,
         "Enter the code received on Telegram for my.telegram.org login.\n"
-        "Send it exactly as received. Spaces are removed automatically.\n\n"
+        "Send it exactly as received. It may contain letters or symbols; spaces are removed automatically.\n\n"
         "Send /cancel to stop.",
         filters=filters.text,
         timeout=600,
@@ -235,17 +266,10 @@ async def generate_api(bot: Client, message: Message):
         return await wait_msg.edit(f"<b>Login failed:</b> <code>{e}</code>")
 
     await wait_msg.edit("Fetching API ID and API HASH...")
-    app_suffix = random_word(6)
-    app_title = f"HRSaveRestricted {app_suffix}"
-    app_shortname = f"hrsr{app_suffix}"
-    app_desc = "HR save restricted account protection"
-
     try:
         api_id, api_hash = await asyncio.to_thread(
-            generator.get_or_create_app,
-            app_title,
-            app_shortname,
-            app_desc,
+            generator.get_or_create_app_with_retry,
+            5,
         )
     except Exception as e:
         return await wait_msg.edit(f"<b>API generation failed:</b> <code>{e}</code>")

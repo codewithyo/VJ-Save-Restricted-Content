@@ -79,33 +79,90 @@ class TelegramApiGenerator:
         )
         self.random_hash = None
 
-    def send_password(self, phone_number):
-        response = self.session.post(
-            "https://my.telegram.org/auth/send_password",
-            data={"phone": phone_number},
-            timeout=30,
-        )
+    def _request_text(self, method, url, **kwargs):
+        response = self.session.request(method, url, timeout=30, **kwargs)
         response.raise_for_status()
-        data = response.json()
-        if "random_hash" not in data:
-            raise ValueError(data.get("error", "Unable to get random hash"))
-        self.random_hash = data["random_hash"]
-        return self.random_hash
+        return response
+
+    @staticmethod
+    def _extract_error_message(body_text):
+        body_text = (body_text or "").strip()
+        if not body_text:
+            return None
+
+        lowered = body_text.lower()
+        if "too many tries" in lowered:
+            return "Telegram rate limited this phone number. Please wait and try again later."
+        if "incorrect" in lowered and "phone" in lowered:
+            return "Telegram rejected the phone number. Check the format and try again."
+        if "error" in lowered:
+            return body_text
+        return None
+
+    @staticmethod
+    def _parse_json_or_text(response):
+        content_type = response.headers.get("content-type", "")
+        text = (response.text or "").strip()
+
+        if not text:
+            return None, "Empty response from Telegram"
+
+        if "json" in content_type.lower() or text.startswith("{"):
+            try:
+                return response.json(), None
+            except ValueError:
+                pass
+
+        return None, TelegramApiGenerator._extract_error_message(text) or text
+
+    def send_password(self, phone_number):
+        self._request_text("GET", "https://my.telegram.org/auth")
+
+        last_error = None
+        for _ in range(3):
+            response = self._request_text(
+                "POST",
+                "https://my.telegram.org/auth/send_password",
+                data={"phone": phone_number},
+                headers={"X-Requested-With": "XMLHttpRequest"},
+            )
+            data, error = self._parse_json_or_text(response)
+            if error:
+                last_error = error
+                if "too many tries" in error.lower():
+                    break
+                time.sleep(1)
+                continue
+
+            if isinstance(data, dict) and "random_hash" in data:
+                self.random_hash = data["random_hash"]
+                return self.random_hash
+
+            last_error = "Unable to get random hash"
+            time.sleep(1)
+
+        raise ValueError(last_error or "Unable to get random hash")
 
     def auth_login(self, phone_number, code):
         if not self.random_hash:
             raise ValueError("random_hash not found, send_password first")
 
-        response = self.session.post(
+        response = self._request_text(
+            "POST",
             "https://my.telegram.org/auth/login",
             data={
                 "phone": phone_number,
                 "random_hash": self.random_hash,
                 "password": code,
             },
-            timeout=30,
         )
-        response.raise_for_status()
+
+        data, error = self._parse_json_or_text(response)
+        if error:
+            raise ValueError(error)
+
+        if isinstance(data, dict) and data.get("error"):
+            raise ValueError(data["error"])
 
         if "stel_token" not in self.session.cookies:
             raise ValueError("Login failed or OTP invalid")
@@ -150,8 +207,7 @@ class TelegramApiGenerator:
         return None
 
     def get_or_create_app(self, app_title, app_shortname, app_desc):
-        apps_page = self.session.get("https://my.telegram.org/apps", timeout=30)
-        apps_page.raise_for_status()
+        apps_page = self._request_text("GET", "https://my.telegram.org/apps")
 
         existing = self._extract_api_from_apps_page(apps_page.text)
         if existing:
@@ -179,8 +235,7 @@ class TelegramApiGenerator:
             raise ValueError("Telegram rejected the app creation request. Try a different app name and shortname.")
 
         for _ in range(4):
-            check_page = self.session.get("https://my.telegram.org/apps", timeout=30)
-            check_page.raise_for_status()
+            check_page = self._request_text("GET", "https://my.telegram.org/apps")
             created = self._extract_api_from_apps_page(check_page.text)
             if created:
                 return created

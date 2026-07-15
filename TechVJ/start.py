@@ -9,7 +9,7 @@ import pyrogram
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message 
-from config import API_ID, API_HASH, ERROR_MESSAGE, LOGIN_SYSTEM, STRING_SESSION, CHANNEL_ID, LOG_CHANNEL_ID, WAITING_TIME
+from config import API_ID, API_HASH, ERROR_MESSAGE, LOGIN_SYSTEM, STRING_SESSION, LOG_CHANNEL_ID, WAITING_TIME
 from database.db import db
 from TechVJ.strings import HELP_TXT
 from bot import TechVJUser
@@ -304,20 +304,15 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
     if not msg_type:
         return
 
-    if CHANNEL_ID:
-        try:
-            chat = int(CHANNEL_ID)
-        except:
-            chat = message.chat.id
-    else:
-        chat = message.chat.id
+    chat = message.chat.id
 
     if batch_temp.IS_BATCH.get(message.from_user.id):
         return
 
     if msg_type == "Text":
         try:
-            await client.send_message(chat, msg.text, entities=msg.entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            sent_message = await client.send_message(chat, msg.text, entities=msg.entities, reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+            asyncio.create_task(backup_to_log(client, sent_message, message))
             return
         except Exception as e:
             if ERROR_MESSAGE == True:
@@ -325,7 +320,7 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
             return
 
     smsg = await client.send_message(message.chat.id, '**Downloading Your Content**', reply_to_message_id=message.id)
-    asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, chat))
+    asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, message.chat.id))
     try:
         file = await acc.download_media(msg, progress=progress, progress_args=[message, "down"])
         os.remove(f'{message.id}downstatus.txt')
@@ -337,7 +332,7 @@ async def handle_private(client: Client, acc, message: Message, chatid: int, msg
     if batch_temp.IS_BATCH.get(message.from_user.id):
         return
 
-    asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, chat))
+    asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, message.chat.id))
 
     caption = msg.caption if msg.caption else None
 
